@@ -11,63 +11,59 @@ from py2neo import neo4j
 
 DATAPATH = "zones"
 
-class Neo4J():
+class Neo4J:
   def __init__(self, dnsname, servername):
     self.graph = neo4j.Graph()
     self.dnsname = dnsname
     self.servername = servername
 
-    self.add_dns_node()
-    self.add_server_node()
-    self.create_relations()
+    self.add_node("DNS","name",dnsname)
+    self.add_node("SERVER","name",servername)
+    self.create_relations("DNS","name",dnsname,"SERVER","name",servername,"DNS")
 
-    ipv4 = self.get_ip_from_hostname(servername)
-    code = self.get_country_code(ipv4)
-    self.create_country(code)
-    self.create_country_relations(code)
+    server_country_code = self.get_country_code(self.get_ip_from_hostname(servername))
+    self.add_node("COUNTRY","name",server_country_code)
 
-  def add_dns_node(self):
-    self.dns = neo4j.Node("DNS", name=self.dnsname)
+    dnsserver_country_code = self.get_country_code(self.get_ip_from_hostname(dnsname))
+    self.add_node("COUNTRY","name",dnsserver_country_code)
 
-    if not list(self.graph.find("DNS", property_key="name", property_value=self.dnsname)):
-      self.graph.create(self.dns)
+    server_company_name = self.get_company(self.get_ip_from_hostname(servername))
+    self.add_node("COMPANY","name",server_company_name)
 
-  def add_server_node(self):
-    self.server = neo4j.Node("SERVER", name=self.servername)
+    dnsserver_company_name = self.get_company(self.get_ip_from_hostname(dnsname))
+    self.add_node("COMPANY","name",dnsserver_company_name)
 
-    if not list(self.graph.find("SERVER", property_key="name", property_value=self.servername)):
-      self.graph.create(self.server)
+    self.create_relations("SERVER","name",servername,"COMPANY","name",server_company_name,"HOSTED_BY")
+    self.create_relations("DNS","name",dnsname,"COMPANY","name",dnsserver_company_name,"HOSTED_BY")
+    self.create_relations("COMPANY","name",server_company_name,"COUNTRY","name",server_country_code,"FROM")
+    self.create_relations("COMPANY","name",dnsserver_company_name,"COUNTRY","name",dnsserver_country_code,"FROM")
 
-  def create_relations(self):
+  def add_node(self, node_label, node_property_key, node_property_value):
+    node = neo4j.Node(node_label, name=node_property_value)
 
-    dns = self.graph.find_one("DNS", property_key="name", property_value=self.dnsname)
-    server = self.graph.find_one("SERVER", property_key="name", property_value=self.servername)
+    if not list(self.graph.find(node_label, property_key=node_property_key, property_value=node_property_value)):
+      self.graph.create(node)
 
-    dns_knows_server = neo4j.Relationship(dns, "KNOWS", server)
-    self.graph.create(dns_knows_server)
+  def create_relations(self, slabel, sproperty_key, sproperty_value, elabel, eproperty_key, eproperty_value, relation_label):
+    start_node = self.graph.find_one(slabel, property_key=sproperty_key, property_value=sproperty_value)
+    end_node = self.graph.find_one(elabel, property_key=eproperty_key, property_value=eproperty_value)
 
-  def create_country_relations(self, countryCode):
-    server = self.graph.find_one("SERVER", property_key="name", property_value=self.servername)
-    country = self.graph.find_one("COUNTRY", property_key="name", property_value=countryCode)
-
-    self.create_relation_if_not_exists(server, country, "FROM")
-
-  def create_country(self, countryCode):
-    country = neo4j.Node("COUNTRY", name=countryCode)
-
-    if not self.graph.find_one("COUNTRY", property_key="name", property_value=countryCode):
-      self.graph.create(country)
+    self.create_relation_if_not_exists(start_node, end_node, relation_label)
 
   def get_ip_from_hostname(self, hostname):
-    ipv4 = socket.gethostbyname(hostname)
-
-    return ipv4
+    return socket.gethostbyname(hostname)
 
   def get_country_code(self, ipv4):
     obj = IPWhois(ipv4)
     results = obj.lookup()
 
     return results['nets'][0]['country']
+
+  def get_company(self, ipv4):
+    obj = IPWhois(ipv4)
+    results = obj.lookup()
+
+    return results['nets'][0]['description']
 
   def create_relation_if_not_exists(self, start_node, end_node, relationship):
     if len(list(self.graph.match(start_node=start_node, end_node=end_node, rel_type=relationship))) > 0:
