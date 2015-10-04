@@ -9,32 +9,38 @@ from ipwhois import IPWhois
 from multiprocessing import Pool
 from py2neo import neo4j
 
+from colorama import Fore, Back, Style, init
+
 DATAPATH = "zones"
+init(autoreset=True)
 
 class Neo4J:
-  def __init__(self, dnsname, servername):
+  def __init__(self):
     self.graph = neo4j.Graph()
+
+  def add_variables(self, dnsname, servername):
     self.dnsname = dnsname
     self.servername = servername
 
-    self.add_node("DNS","name",dnsname)
-    self.add_node("SERVER","name",servername)
-    self.create_relations("DNS","name",dnsname,"SERVER","name",servername,"DNS")
+  def add_default_node(self):
+    self.add_node("DNSSERVER","name",self.dnsname)
+    self.add_node("SERVER","name",self.servername)
+    self.create_relations("DNSSERVER","name",self.dnsname,"SERVER","name",self.servername,"DNS")
 
-    server_country_code = self.get_country_code(self.get_ip_from_hostname(servername))
+    server_country_code = self.get_country_code(self.get_ip_from_hostname(self.servername))
     self.add_node("COUNTRY","name",server_country_code)
 
-    dnsserver_country_code = self.get_country_code(self.get_ip_from_hostname(dnsname))
+    dnsserver_country_code = self.get_country_code(self.get_ip_from_hostname(self.dnsname))
     self.add_node("COUNTRY","name",dnsserver_country_code)
 
-    server_company_name = self.get_company(self.get_ip_from_hostname(servername))
+    server_company_name = self.get_company(self.get_ip_from_hostname(self.servername))
     self.add_node("COMPANY","name",server_company_name)
 
-    dnsserver_company_name = self.get_company(self.get_ip_from_hostname(dnsname))
+    dnsserver_company_name = self.get_company(self.get_ip_from_hostname(self.dnsname))
     self.add_node("COMPANY","name",dnsserver_company_name)
 
-    self.create_relations("SERVER","name",servername,"COMPANY","name",server_company_name,"HOSTED_BY")
-    self.create_relations("DNS","name",dnsname,"COMPANY","name",dnsserver_company_name,"HOSTED_BY")
+    self.create_relations("SERVER","name",self.servername,"COMPANY","name",server_company_name,"HOSTED_BY")
+    self.create_relations("DNSSERVER","name",self.dnsname,"COMPANY","name",dnsserver_company_name,"HOSTED_BY")
     self.create_relations("COMPANY","name",server_company_name,"COUNTRY","name",server_country_code,"FROM")
     self.create_relations("COMPANY","name",dnsserver_company_name,"COUNTRY","name",dnsserver_country_code,"FROM")
 
@@ -43,6 +49,12 @@ class Neo4J:
 
     if not list(self.graph.find(node_label, property_key=node_property_key, property_value=node_property_value)):
       self.graph.create(node)
+
+  def node_is_exists(self, node_label, node_property_key, node_property_value):
+    if not list(self.graph.find(node_label, property_key=node_property_key, property_value=node_property_value)):
+      return True
+    else:
+      return False
 
   def create_relations(self, slabel, sproperty_key, sproperty_value, elabel, eproperty_key, eproperty_value, relation_label):
     start_node = self.graph.find_one(slabel, property_key=sproperty_key, property_value=sproperty_value)
@@ -67,49 +79,56 @@ class Neo4J:
 
   def create_relation_if_not_exists(self, start_node, end_node, relationship):
     if len(list(self.graph.match(start_node=start_node, end_node=end_node, rel_type=relationship))) > 0:
-      return false
+      return False
     else:
       relation = neo4j.Relationship(start_node, relationship, end_node)
       self.graph.create(relation)
 
 def checkaxfr(domain):
   domain = domain.strip()
-  try:
-    ns_query = dns.resolver.query(domain,'NS')
-    for ns in ns_query.rrset:
-      nameserver = str(ns)[:-1]
-      if nameserver is None or nameserver == "":
-        continue
+  neo = Neo4J()
 
-      if os.path.exists("." + os.sep + DATAPATH + os.sep + domain + "#" + nameserver + ".zone"):
-        continue
+  if not neo.node_is_exists("SERVER","name",domain):
+    try:
+      ns_query = dns.resolver.query(domain,'NS')
+      for ns in ns_query.rrset:
+        nameserver = str(ns)[:-1]
+        if nameserver is None or nameserver == "":
+          continue
 
-      try:
-        axfr = dns.query.xfr(nameserver, domain, lifetime=5)
+        if os.path.exists("." + os.sep + DATAPATH + os.sep + domain + "#" + nameserver + ".zone"):
+          continue
+
+        neo.add_variables(nameserver, domain)
+        neo.add_default_node()
+        print(Fore.RED + "ADD vulnerable DNS: " + domain)
+
         try:
-          zone = dns.zone.from_xfr(axfr)
-          if zone is None:
+          axfr = dns.query.xfr(nameserver, domain, lifetime=5)
+          try:
+            zone = dns.zone.from_xfr(axfr)
+            if zone is None:
+              continue
+            fHandle = open("." + os.sep + DATAPATH + os.sep + domain + "#" + nameserver + ".zone", "w")
+            print("Success: " + domain + " @ " + nameserver)
+
+            for name, node in zone.nodes.items():
+              rdatasets = node.rdatasets
+              for rdataset in rdatasets:
+                fHandle.write(str(name) + " " + str(rdataset) + "\n")
+            fHandle.close()
+          except Exception as e:
             continue
-          fHandle = open("." + os.sep + DATAPATH + os.sep + domain + "#" + nameserver + ".zone", "w")
-          print("Success: " + domain + " @ " + nameserver)
-
-          Neo4J(nameserver, domain)
-
-          for name, node in zone.nodes.items():
-            rdatasets = node.rdatasets
-            for rdataset in rdatasets:
-              fHandle.write(str(name) + " " + str(rdataset) + "\n")
-          fHandle.close()
         except Exception as e:
           continue
-      except Exception as e:
-        continue
-  except Exception as e:
-    pass
-  print("Finished: " + domain)
+    except Exception as e:
+      pass
+    print(Fore.WHITE + "Finished: " + domain)
+  else:
+    print(Fore.GREEN + "Domain exists: " + domain)
 
 def main():
-  pool = Pool(processes=20)
+  pool = Pool(processes=5)
   lines = open("domains.txt", "r").readlines()
   pool.map(checkaxfr, lines)
 if __name__ == '__main__':
