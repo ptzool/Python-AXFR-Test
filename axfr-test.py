@@ -9,10 +9,7 @@ from ipwhois import IPWhois
 from multiprocessing import Pool
 from py2neo import neo4j
 
-from colorama import Fore, Back, Style, init
-
 DATAPATH = "zones"
-init(autoreset=True)
 
 class Neo4J:
   def __init__(self):
@@ -47,11 +44,11 @@ class Neo4J:
   def add_node(self, node_label, node_property_key, node_property_value):
     node = neo4j.Node(node_label, name=node_property_value)
 
-    if not list(self.graph.find(node_label, property_key=node_property_key, property_value=node_property_value)):
+    if not self.graph.find_one(node_label, property_key=node_property_key, property_value=node_property_value):
       self.graph.create(node)
 
   def node_is_exists(self, node_label, node_property_key, node_property_value):
-    if not list(self.graph.find(node_label, property_key=node_property_key, property_value=node_property_value)):
+    if self.graph.find_one(node_label, property_key=node_property_key, property_value=node_property_value):
       return True
     else:
       return False
@@ -87,6 +84,7 @@ class Neo4J:
 def checkaxfr(domain):
   domain = domain.strip()
   neo = Neo4J()
+  neo.add_node("VULNERABLE","name","VULNERABLE")
 
   if not neo.node_is_exists("SERVER","name",domain):
     try:
@@ -96,36 +94,27 @@ def checkaxfr(domain):
         if nameserver is None or nameserver == "":
           continue
 
-        if os.path.exists("." + os.sep + DATAPATH + os.sep + domain + "#" + nameserver + ".zone"):
-          continue
-
         neo.add_variables(nameserver, domain)
         neo.add_default_node()
-        print(Fore.RED + "ADD vulnerable DNS: " + domain)
+        print("ADD: " + domain + " AND " + nameserver)
 
         try:
           axfr = dns.query.xfr(nameserver, domain, lifetime=5)
           try:
             zone = dns.zone.from_xfr(axfr)
-            if zone is None:
-              continue
-            fHandle = open("." + os.sep + DATAPATH + os.sep + domain + "#" + nameserver + ".zone", "w")
-            print("Success: " + domain + " @ " + nameserver)
 
-            for name, node in zone.nodes.items():
-              rdatasets = node.rdatasets
-              for rdataset in rdatasets:
-                fHandle.write(str(name) + " " + str(rdataset) + "\n")
-            fHandle.close()
+            if zone:
+              neo.create_relations("SERVER","name",domain,"VULNERABLE","name","VULNERABLE","VULNERABLE")
+              print("ADD vulnerable DNS: " + domain)
+
           except Exception as e:
             continue
         except Exception as e:
           continue
     except Exception as e:
       pass
-    print(Fore.WHITE + "Finished: " + domain)
   else:
-    print(Fore.GREEN + "Domain exists: " + domain)
+    print("Domain exists: " + domain)
 
 def main():
   pool = Pool(processes=5)
