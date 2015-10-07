@@ -9,8 +9,6 @@ from ipwhois import IPWhois
 from multiprocessing import Pool
 from py2neo import neo4j
 
-DATAPATH = "zones"
-
 class Neo4J:
   def __init__(self):
     self.graph = neo4j.Graph()
